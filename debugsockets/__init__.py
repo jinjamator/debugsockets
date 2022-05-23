@@ -27,6 +27,9 @@ if not '__socket_plus__' in globals():
         'dst_ip':{}
         }
 
+class DestinationUnreachable(Exception):
+    pass
+
 class DebugSocket(socket.socket):
     _settings=globals()['__socket_plus__']['settings']
     def __init__(self, family=-1, type=-1, proto=-1, fileno=None):
@@ -52,7 +55,7 @@ class DebugSocket(socket.socket):
 
 
     @property
-    def set_source_port(self,port):
+    def src_port(self,port):
         self._src_port=port
 
     def bind_source_port(self):
@@ -60,10 +63,12 @@ class DebugSocket(socket.socket):
             if self._src_address:
                 self.bind((self._src_address,int(self._src_port)))
                 self._log.debug(f'Bound to static source port {self._src_address}:{self._src_port}')
+                
             else:
                 self.bind(('0.0.0.0',int(self._src_port)))
                 self._log.debug(f'Bound to static source port 0.0.0.0:{self._src_port}')
-        self._log.debug(f'No static source port defined using dynamic ephemeral port')
+        else:
+            self._log.debug(f'No static source port defined using dynamic ephemeral port')
         
     def set_ttl(self,ttl):
         self._log.debug(f'Setting TTL to {ttl}')
@@ -74,30 +79,6 @@ class DebugSocket(socket.socket):
         self.setsockopt(socket.IPPROTO_IP, IP_RECVERR, int(True))
         self.setsockopt (socket.SOL_IP, IP_RECVTTL, int(True))
         self._log.debug('Enabled IP_RECVERR and IP_RECVTTL flags on socket')
-
-    # def check_errors(self,max_packet_size=65535):
-    #     self._log.debug('checking for icmp errors')
-    #     sleep(DEFAULT_TRACEROUTE_TIMEOUT)
-    #     try:            
-    #         recv, ancdata, flags, addr = self.recvmsg(max_packet_size,65535,MSG_ERRQUEUE)
-    #         if ancdata[0][1] == ERROR_REASON_ICMP:
-    #             reporting_ip='.'.join([str(i) for i in ancdata[1][2][20:24]])
-    #             if ancdata[1][2][ICMP_TYPE_OFFSET] == TTL_EXPIRED:
-    #                 self._log.error (f'got icmp error TTL_EXPIRED from {reporting_ip}')
-    #                 if self.auto_traceroute:
-    #                     self._log.debug('auto traceroute enabled')
-    #                     self.__ttl+=1
-    #                     self._log.debug(f'ttl is now {self.__ttl}')
-    #                     return self.send(self._last_sent_bytes, self._last_sent_flags)
-    #             elif ancdata[1][2][ICMP_TYPE_OFFSET] == DESTINATION_UNREACHABLE:
-    #                 # pass
-    #                 print (f'got icmp error DESTINATION_UNREACHABLE from {reporting_ip}')
-    #     except BlockingIOError:
-    #         # if retry:
-    #         #     self._log.debug(f'no error response, waiting for {DEFAULT_TRACEROUTE_TIMEOUT} seconds until retry')
-                
-    #         #     self.check_errors(max_packet_size,False)
-    #         pass
 
     def connect(self, __address):
         self._dst_address=__address[0]
@@ -112,15 +93,13 @@ class DebugSocket(socket.socket):
 
     def send(self,bytes,flags=0):
         self.set_ttl(self.__ttl)
-        # if self._settings['static_source_port']:
-        #     self.set_source_port(int(self._settings['static_source_port']))
-        #     self.bind_source_port()
         self._log.debug(f'Sending {len(bytes)} bytes from {self._src_address}:{self._src_port} to {self._dst_address}:{self._dst_port}')
         if self._settings['debug'] == 'packet':
             hex_data=':'.join(format(c, '02x') for c in bytes)
             self._log.debug(f'Packet data: {hex_data}')
         self._last_sent_bytes=bytes
         self._last_sent_flags=flags
+        self._last_error=None
         if self._settings['error_handling']:
             self.enable_error_handling()
         result=super().send(bytes,flags)
@@ -139,17 +118,22 @@ class DebugSocket(socket.socket):
                     self._log.error (f'got ICMP error DESTINATION_UNREACHABLE from {reporting_ip}')
         except Exception:
             self._log.error (f'Cannot parse ancdata {ancdata}')
-        return 
+
+
     def recv(self,max_packet_size):
-        # if self._settings['error_handling']:
         try:
             data, ancdata, msg_flags, address = super().recvmsg(max_packet_size, 65535)
-        except OSError:
+        except OSError as e:
             data, ancdata, msg_flags, address = self.recvmsg(max_packet_size, 65535, MSG_ERRQUEUE)
-        self.handle_ancdata(ancdata)
-        # from pprint import pprint
-        # pprint(data)
-        # pprint(ancdata)
+            self.handle_ancdata(ancdata)
+            if self._last_error == 'TTL_EXPIRED':
+                if self._settings['auto_traceroute']:
+                    self.__ttl+=1
+                    self._log.debug(f'Auto traceroute enabled. Resending packet with TTL {self.__ttl}')
+                    self.send(self._last_sent_bytes, self._last_sent_flags)
+                    return self.recv(max_packet_size)
+            elif self._last_error == 'DESTINATION_UNREACHABLE':
+                raise DestinationUnreachable
         return data
 
 

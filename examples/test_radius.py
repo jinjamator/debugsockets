@@ -12,7 +12,8 @@ from time import sleep
 socket.socket._settings['debug']='packet'
 socket.socket._settings['error_handling']=True
 socket.socket._settings['static_source_port']=10000
-socket.socket._settings['initial_ttl']=2
+socket.socket._settings['initial_ttl']=1
+socket.socket._settings['auto_traceroute']=2
 while True:
     port = os.environ.get('RADIUS_PORT',1812)
     host= os.environ.get('RADIUS_SERVER','127.0.0.1')
