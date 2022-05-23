@@ -27,7 +27,7 @@ if not '__socket_plus__' in globals():
         'dst_ip':{}
         }
 
-class SocketPlusSocket(socket.socket):
+class DebugSocket(socket.socket):
     _settings=globals()['__socket_plus__']['settings']
     def __init__(self, family=-1, type=-1, proto=-1, fileno=None):
         super().__init__(family, type, proto, fileno)
@@ -155,5 +155,5 @@ class SocketPlusSocket(socket.socket):
 
 
 # register socketPlus
-sys.modules['socket'].socket=SocketPlusSocket
+sys.modules['socket'].socket=DebugSocket
 # print(dir(sys.modules['socket']))
