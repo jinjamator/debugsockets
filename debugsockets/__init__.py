@@ -34,8 +34,9 @@ class DebugSocket(socket.socket):
 
 
     def __init__(self, family=-1, type=-1, proto=-1, fileno=None):
-        
+        self._log=logging.getLogger(__file__)
         self._global_index=len(self.socket_list)
+        self._log.debug(f'Created Socket with global index {self._global_index}')
         if self._global_index not in self.global_settings:
             super().__init__(family, type, proto, fileno)
             self.settings=deepcopy(self.default_settings)
@@ -47,8 +48,7 @@ class DebugSocket(socket.socket):
 
         self.settings=self.global_settings[self._global_index]
         super().__init__(family, type, proto, fileno)
-        self._log=logging.getLogger(__file__)
-        self._log.debug(f'Created Socket with global index {self._global_index}')
+       
         self.__ttl=self.settings['initial_ttl']
         self._dst_address=None
         self._dst_port=None
