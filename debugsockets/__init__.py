@@ -27,7 +27,8 @@ class DebugSocket(socket.socket):
             'error_handling':False,
             'auto_traceroute': False,
             'static_source_port': False,
-            'initial_ttl': 64
+            'initial_ttl': 64,
+            'timeout': 1
         }
     socket_list=[]
     
@@ -115,6 +116,7 @@ class DebugSocket(socket.socket):
             return super().send(bytes,flags)
 
         self.set_ttl(self.__ttl)
+        self.settimeout(self.settings['timeout'])
         self._log.debug(f'Sending {len(bytes)} bytes from {self._src_address}:{self._src_port} to {self._dst_address}:{self._dst_port}')
         if self.settings['debug'] == 'packet':
             hex_data=':'.join(format(c, '02x') for c in bytes)
