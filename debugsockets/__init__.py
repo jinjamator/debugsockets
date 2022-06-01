@@ -15,12 +15,16 @@ ICMP_TYPE_OFFSET=5
 DEFAULT_MAX_TTL= 1
 DEFAULT_TRACEROUTE_TIMEOUT= 0.2
 
+from collections import defaultdict
+
+def tree():
+    return defaultdict(tree)
 
 class DestinationUnreachable(Exception):
     pass
 
 class DebugSocket(socket.socket):
-    global_settings={}
+    global_settings=tree()
     default_settings={
             'enabled':False,
             'debug':False,
@@ -28,29 +32,19 @@ class DebugSocket(socket.socket):
             'auto_traceroute': False,
             'static_source_port': False,
             'initial_ttl': 64,
-            'timeout': 1
+            'timeout': 10,
+            'socket': None
         }
     socket_list=[]
+    
     
 
 
     def __init__(self, family=-1, type=-1, proto=-1, fileno=None):
         self._log=logging.getLogger(__file__)
-        self._global_index=len(self.socket_list)
-        self._log.debug(f'Created Socket with global index {self._global_index}')
-        if self._global_index not in self.global_settings:
-            super().__init__(family, type, proto, fileno)
-            self.settings=deepcopy(self.default_settings)
-            return None
-        self.socket_list.append(self)
-        for k,v in self.default_settings.items():
-            if k not in self.global_settings[self._global_index]:
-                self.global_settings[self._global_index][k]=v
-
-        self.settings=self.global_settings[self._global_index]
         super().__init__(family, type, proto, fileno)
        
-        self.__ttl=self.settings['initial_ttl']
+        self.__ttl=None
         self._dst_address=None
         self._dst_port=None
         self._src_address=None
@@ -58,32 +52,76 @@ class DebugSocket(socket.socket):
         self._last_sent_bytes=None
         self._last_sent_flags=None
         self._last_error=None
-        # self._socket_infos={
-        #     'src_ip':None,
-        #     'dst_ip':None,
-        #     'src_port': None,
-        #     'dst_port':None,
-        #     'hops':[]
-        # }
         self._hops=[]
         self._last_send_time=None
         self._last_roundtrip_time=None
+        self.settings={}
+        self._total_sent_packets=0
+        self._traceroute_running=False
         
         
         
-    @property
-    def src_port(self,port):
-        self._src_port=port
+    # @property
+    # def src_port(self,port):
+    #     self._src_port=port
+    def check_for_config(self):
+        if self._dst_address in self.global_settings: # specific supersedes global config
+            dst=self._dst_address
+        elif 'any' in self.global_settings:
+            dst='any'
+        else:
+            return False
+      
+
+        if self._dst_port in self.global_settings[dst]: # specific supersedes global config
+            dst_port=self._dst_port
+        elif 'any' in self.global_settings[dst]:
+            dst_port='any'
+        else:
+            return False
+   
+
+        if self._src_address in self.global_settings[dst][dst_port]: # specific supersedes global config
+            src=self._src_address
+        elif 'any' in self.global_settings[dst][dst_port]:
+            src='any'
+        else:
+            return False
+
+        if self._src_port in self.global_settings[dst][dst_port][src]: # specific supersedes global config
+            src_port=self._src_address
+        elif 'any' in self.global_settings[dst][dst_port][src]:
+            src_port='any'
+        else:
+            return False
+
+        self._log.debug(f"configuration for source {src}:{src_port} -> {dst}:{dst_port} found")
+
+        # merge default config
+        for k,v in self.default_settings.items():
+            if k not in self.global_settings[dst][dst_port][src][src_port]:
+                self.global_settings[dst][dst_port][src][src_port][k]=v
+
+        self.settings=self.global_settings[dst][dst_port][src][src_port]
+        self.__ttl=self.settings['initial_ttl']
+        if self.settings['static_source_port']:
+            self._src_port=int(self.settings['static_source_port'])
+        self.settings['socket']=self
+
 
     def bind_source_port(self):
         if self._src_port:
-            if self._src_address:
-                self.bind((self._src_address,int(self._src_port)))
-                self._log.debug(f'Bound to static source port {self._src_address}:{self._src_port}')
+            try:
+                if self._src_address:
+                    self.bind((self._src_address,int(self._src_port)))
+                    self._log.debug(f'Bound to static source port {self._src_address}:{self._src_port}')
+                    
+                else:
+                    self.bind(('0.0.0.0',int(self._src_port)))
+                    self._log.debug(f'Bound to static source port 0.0.0.0:{self._src_port}')
+            except PermissionError as e:
+                self._log.warning(f'Permission Denied. Cannot bind port {self._src_port} using ephermal port.')
                 
-            else:
-                self.bind(('0.0.0.0',int(self._src_port)))
-                self._log.debug(f'Bound to static source port 0.0.0.0:{self._src_port}')
         else:
             self._log.debug(f'No static source port defined using dynamic ephemeral port')
         
@@ -98,13 +136,12 @@ class DebugSocket(socket.socket):
         self._log.debug('Enabled IP_RECVERR and IP_RECVTTL flags on socket')
 
     def connect(self, __address):
-        if not self.settings['enabled']:
-            return super().connect(__address)
-        
         self._dst_address=__address[0]
         self._dst_port=__address[1]
-        if self.settings['static_source_port']:
-            self._src_port=int(self.settings['static_source_port'])
+        self.check_for_config()
+        if not self.settings.get('enabled'):
+            return super().connect(__address)
+            
         self.bind_source_port()
         con=super().connect(__address)
         self._src_address, self._src_port=self.getsockname()
@@ -112,11 +149,16 @@ class DebugSocket(socket.socket):
         return con    
 
     def send(self,bytes,flags=0):
-        if not self.settings['enabled']:
+        if not self.settings.get('enabled'):
             return super().send(bytes,flags)
-
-        self.set_ttl(self.__ttl)
-        self.settimeout(self.settings['timeout'])
+        if self.settings['auto_traceroute'] and not self._traceroute_running:
+            if self._total_sent_packets % int(self.settings['auto_traceroute']) == 0:
+                self._log.debug(f'Auto traceroute enabled. Setting TTL=1 and timeout to {self.settings["timeout"]}')
+                self.set_ttl(1)
+                self.settimeout(self.settings['timeout'])
+                self._traceroute_running=True
+            
+        
         self._log.debug(f'Sending {len(bytes)} bytes from {self._src_address}:{self._src_port} to {self._dst_address}:{self._dst_port}')
         if self.settings['debug'] == 'packet':
             hex_data=':'.join(format(c, '02x') for c in bytes)
@@ -124,10 +166,12 @@ class DebugSocket(socket.socket):
         self._last_sent_bytes=bytes
         self._last_sent_flags=flags
         self._last_error=None
+        
         if self.settings['error_handling']:
             self.enable_error_handling()
         self._last_send_time=round(time.time() * 1000,2)
         result=super().send(bytes,flags)
+        self._total_sent_packets+=1
 
         return result
     
@@ -159,28 +203,30 @@ class DebugSocket(socket.socket):
 
 
     def recv(self,max_packet_size):
-        if not self.settings['enabled']:
+        if not self.settings.get('enabled'):
             return super().recv(max_packet_size)
         self._last_roundtrip_time=round(time.time() * 1000 - self._last_send_time,4)
         try:
             data, ancdata, msg_flags, address = super().recvmsg(max_packet_size, 65535)
             self.handle_ancdata(ancdata)
+            # self._traceroute_running=False
         except OSError as e:
             data, ancdata, msg_flags, address = self.recvmsg(max_packet_size, 65535, MSG_ERRQUEUE)
             reporting_ip=self.handle_ancdata(ancdata)
             if self._last_error == 'TTL_EXPIRED':
-                if self.settings['auto_traceroute']:
-                    self.__ttl+=1
-                    self._log.debug(f'Auto traceroute enabled. Resending packet with TTL {self.__ttl}')
-                    
+                if self._traceroute_running:
+                    self.set_ttl(self.__ttl+1)
+                    self._log.debug(f'Auto traceroute enabled. Resending packet with TTL {self.__ttl}')                    
                     self.send(self._last_sent_bytes, self._last_sent_flags)
                     return self.recv(max_packet_size)
             elif self._last_error == 'DESTINATION_UNREACHABLE':
+                self._traceroute_running=False
                 raise DestinationUnreachable
+        self._traceroute_running=False
         return data
     
     # def __del__(self):
-    #     if not self.settings['enabled']:
+    #     if not self.settings.get('enabled'):
     #     self._log.debug('Delete socket index {self._global_index}')
     #     self.socket_list.pop(self._global_index)
     #     del self.global_settings[self._global_index]
