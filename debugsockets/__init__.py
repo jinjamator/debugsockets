@@ -33,7 +33,8 @@ class DebugSocket(socket.socket):
             'static_source_port': False,
             'initial_ttl': 64,
             'timeout': 10,
-            'socket': None
+            'socket': None,
+            'incarnation': 0
         }
     socket_list=[]
     
@@ -107,6 +108,7 @@ class DebugSocket(socket.socket):
         if self.settings['static_source_port']:
             self._src_port=int(self.settings['static_source_port'])
         self.settings['socket']=self
+        self.settings['incarnation']+=1
 
 
     def bind_source_port(self):
@@ -152,12 +154,11 @@ class DebugSocket(socket.socket):
         if not self.settings.get('enabled'):
             return super().send(bytes,flags)
         if self.settings['auto_traceroute'] and not self._traceroute_running:
-            if self._total_sent_packets % int(self.settings['auto_traceroute']) == 0:
-                self._log.debug(f'Auto traceroute enabled. Setting TTL=1 and timeout to {self.settings["timeout"]}')
+            if (self.settings['incarnation']-1) % int(self.settings['auto_traceroute']) == 0:
+                self._log.debug(f'Auto traceroute enabled for {self.settings["auto_traceroute"] } incarnation of the socket.  Setting TTL=1 and timeout to {self.settings["timeout"]}')
                 self.set_ttl(1)
                 self.settimeout(self.settings['timeout'])
                 self._traceroute_running=True
-            
         
         self._log.debug(f'Sending {len(bytes)} bytes from {self._src_address}:{self._src_port} to {self._dst_address}:{self._dst_port}')
         if self.settings['debug'] == 'packet':
@@ -209,7 +210,6 @@ class DebugSocket(socket.socket):
         try:
             data, ancdata, msg_flags, address = super().recvmsg(max_packet_size, 65535)
             self.handle_ancdata(ancdata)
-            # self._traceroute_running=False
         except OSError as e:
             data, ancdata, msg_flags, address = self.recvmsg(max_packet_size, 65535, MSG_ERRQUEUE)
             reporting_ip=self.handle_ancdata(ancdata)
@@ -225,13 +225,7 @@ class DebugSocket(socket.socket):
         self._traceroute_running=False
         return data
     
-    # def __del__(self):
-    #     if not self.settings.get('enabled'):
-    #     self._log.debug('Delete socket index {self._global_index}')
-    #     self.socket_list.pop(self._global_index)
-    #     del self.global_settings[self._global_index]
-    #     return super().__del__()
 
 # register socketPlus
 sys.modules['socket'].socket=DebugSocket
-# print(dir(sys.modules['socket']))
+
