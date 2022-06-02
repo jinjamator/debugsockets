@@ -174,6 +174,8 @@ class DnsMonitoring(object):
         
         resolver = dns.resolver.Resolver(configure=False)
         resolver.nameservers = [self.host]
+        resolver.timeout=10
+        resolver.lifetime=10
         success=False
         answer=None
         try:
