@@ -175,7 +175,14 @@ class DebugSocket(socket.socket):
         self._total_sent_packets+=1
 
         return result
-    
+   
+    def sendto(self,bytes, address):
+        self.connect(address)
+        if not self.settings.get('enabled'):
+            return super().sendto(bytes, address)        
+        return  self.send(bytes)
+
+
     def get_network_hops(self):
         return self._socket_infos['hops']
     
@@ -225,6 +232,10 @@ class DebugSocket(socket.socket):
         self._traceroute_running=False
         return data
     
+    def recvfrom(self,max_packet_size):
+        if not self.settings.get('enabled'):
+            return super().recvfrom(max_packet_size)
+        return (self.recv(max_packet_size),(self._dst_address,self._dst_port))
 
 # register socketPlus
 sys.modules['socket'].socket=DebugSocket
