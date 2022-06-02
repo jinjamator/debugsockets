@@ -49,13 +49,13 @@ class RadiusMonitoring(object):
         self.zabbix_setup_done = False
         self.source_ip=None
         self.source_port=None
-        self.port = os.environ.get('RADIUS_PORT',1812)
+        self.port = int(os.environ.get('RADIUS_PORT',1812))
         self.host= os.environ.get('RADIUS_SERVER','127.0.0.1')
         self.secret=os.environ.get('RADIUS_SECRET','testing123')
         self.username=os.environ.get('RADIUS_USERNAME','bob')
         self.password=os.environ.get('RADIUS_PASSWORD','test')
-        self.interval=os.environ.get('RADIUS_INTERVAL',10)
-        self.static_source_port=os.environ.get('RADIUS_STATIC_SOURCE_PORT', False)
+        self.interval=int(os.environ.get('RADIUS_INTERVAL',10))
+        self.static_source_port=int(os.environ.get('RADIUS_STATIC_SOURCE_PORT', False))
         self.zbx_target=os.environ.get('ZABBIX_TARGET',self.host)
         self.zbx_host_group=os.environ.get('ZABBIX_HOSTGROUP',"Radius Servers")
         self.zbx_base_key="app.radius.{}.{}"
@@ -170,6 +170,7 @@ class RadiusMonitoring(object):
             print(f'Authentication for user {self.username} successful')
         else:
             print(f'Authentication for user {self.username} failed')
+        pprint(socket.socket.global_settings)
         sock=socket.socket.global_settings[radius_server][radius_port]['any']['any']['socket']
         print(sock._hops)
         self.source_ip=sock._src_address
