@@ -32,7 +32,7 @@ class DebugSocket(socket.socket):
             'auto_traceroute': False,
             'static_source_port': False,
             'initial_ttl': 64,
-            'timeout': 10,
+            'timeout': 1,
             'socket': None,
             'incarnation': 0
         }
@@ -225,7 +225,15 @@ class DebugSocket(socket.socket):
                     self.set_ttl(self.__ttl+1)
                     self._log.debug(f'Auto traceroute enabled. Resending packet with TTL {self.__ttl}')                    
                     self.send(self._last_sent_bytes, self._last_sent_flags)
-                    return self.recv(max_packet_size)
+                    try:
+                        return self.recv(max_packet_size)
+                    except socket.timeout as e:
+                        self._log.debug(f'Traceroute TTL {self.__ttl} timed out. Resending packet with TTL {self.__ttl+1}')
+                        self._hops.append( [self.__ttl,"*","*"])
+                        self.set_ttl(self.__ttl+1)
+                        self.send(self._last_sent_bytes, self._last_sent_flags)
+                        return self.recv(max_packet_size)
+
             elif self._last_error == 'DESTINATION_UNREACHABLE':
                 self._traceroute_running=False
                 raise DestinationUnreachable
