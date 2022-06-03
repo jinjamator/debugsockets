@@ -3,6 +3,7 @@ import sys
 import logging
 import time
 from copy import deepcopy
+import errno
 logging.basicConfig(format="[%(levelname)s] %(asctime)s %(message)s", level=logging.DEBUG)
 
 IP_RECVERR = 11
@@ -59,6 +60,7 @@ class DebugSocket(socket.socket):
         self.settings={}
         self._total_sent_packets=0
         self._traceroute_running=False
+        self.global_settings['current_socket']=self
         
         
         
@@ -109,20 +111,27 @@ class DebugSocket(socket.socket):
             self._src_port=int(self.settings['static_source_port'])
         self.settings['socket']=self
         self.settings['incarnation']+=1
+        
 
 
     def bind_source_port(self):
         if self._src_port:
             try:
+                self.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                 if self._src_address:
                     self.bind((self._src_address,int(self._src_port)))
                     self._log.debug(f'Bound to static source port {self._src_address}:{self._src_port}')
-                    
                 else:
                     self.bind(('0.0.0.0',int(self._src_port)))
                     self._log.debug(f'Bound to static source port 0.0.0.0:{self._src_port}')
+                
             except PermissionError as e:
                 self._log.warning(f'Permission Denied. Cannot bind port {self._src_port} using ephermal port.')
+            except socket.error as e:
+                if e.errno == errno.EADDRINUSE:
+                    self._log.error("Port is already in use")
+                else:
+                    self._log.debug(e)
                 
         else:
             self._log.debug(f'No static source port defined using dynamic ephemeral port')
@@ -138,12 +147,13 @@ class DebugSocket(socket.socket):
         self._log.debug('Enabled IP_RECVERR and IP_RECVTTL flags on socket')
 
     def connect(self, __address):
+        
         self._dst_address=__address[0]
         self._dst_port=__address[1]
         self.check_for_config()
         if not self.settings.get('enabled'):
             return super().connect(__address)
-            
+        self._log.debug(f'connecting to {__address}')    
         self.bind_source_port()
         con=super().connect(__address)
         self._src_address, self._src_port=self.getsockname()
@@ -155,6 +165,7 @@ class DebugSocket(socket.socket):
             return super().send(bytes,flags)
         if self.settings['auto_traceroute'] and not self._traceroute_running:
             if (self.settings['incarnation']-1) % int(self.settings['auto_traceroute']) == 0:
+                self.enable_error_handling()
                 self._log.debug(f'Auto traceroute enabled for {self.settings["auto_traceroute"] } incarnation of the socket.  Setting TTL=1 and timeout to {self.settings["timeout"]}')
                 self.set_ttl(1)
                 self.settimeout(self.settings['timeout'])
@@ -172,16 +183,34 @@ class DebugSocket(socket.socket):
             self.enable_error_handling()
         self._last_send_time=round(time.time() * 1000,2)
         result=super().send(bytes,flags)
+        
+        
         self._total_sent_packets+=1
-
         return result
-   
+        
+    def sendall(self,bytes, flags=0):
+        if not self.settings.get('enabled'):
+            return super().sendall(bytes, flags)        
+        return  self.send(bytes,flags)
+
+
     def sendto(self,bytes, address):
         self.connect(address)
         if not self.settings.get('enabled'):
             return super().sendto(bytes, address)        
         return  self.send(bytes)
 
+
+    # def recv_into(self,buffer,nbytes=0,flags=0):
+    #     if not self.settings.get('enabled'):
+    #         return super().recv_into(buffer,nbytes,flags)  
+    #     print(buffer)
+    #     print(len(buffer))
+    #     buffer=self.recv(len(buffer))
+    #     # try:
+    #     #     super().recv_into(buffer,nbytes,flags)
+    #     # except Exception as e:
+    #     #     print(e)
 
     def get_network_hops(self):
         return self._socket_infos['hops']
@@ -209,16 +238,21 @@ class DebugSocket(socket.socket):
         )            
         return reporting_ip
 
-
+    # def recvmsg_into(buffers,size,flags=0):
+        
+        
     def recv(self,max_packet_size):
+        
         if not self.settings.get('enabled'):
             return super().recv(max_packet_size)
+        
         self._last_roundtrip_time=round(time.time() * 1000 - self._last_send_time,4)
         try:
             data, ancdata, msg_flags, address = super().recvmsg(max_packet_size, 65535)
             self.handle_ancdata(ancdata)
         except OSError as e:
-            data, ancdata, msg_flags, address = self.recvmsg(max_packet_size, 65535, MSG_ERRQUEUE)
+            if e.errno != 113:
+                data, ancdata, msg_flags, address = self.recvmsg(max_packet_size, 65535, MSG_ERRQUEUE)
             reporting_ip=self.handle_ancdata(ancdata)
             if self._last_error == 'TTL_EXPIRED':
                 if self._traceroute_running:
