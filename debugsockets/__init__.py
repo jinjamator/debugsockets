@@ -251,8 +251,8 @@ class DebugSocket(socket.socket):
             data, ancdata, msg_flags, address = super().recvmsg(max_packet_size, 65535)
             self.handle_ancdata(ancdata)
         except OSError as e:
-            if e.errno != 113:
-                data, ancdata, msg_flags, address = self.recvmsg(max_packet_size, 65535, MSG_ERRQUEUE)
+            # if e.errno != 113:
+            data, ancdata, msg_flags, address = self.recvmsg(max_packet_size, 65535, MSG_ERRQUEUE)
             reporting_ip=self.handle_ancdata(ancdata)
             if self._last_error == 'TTL_EXPIRED':
                 if self._traceroute_running:
